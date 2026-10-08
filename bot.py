@@ -20,8 +20,6 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 OWNER_ID = 8613895639
 
 DB_FILE = "groups.db"
-
-# Small delay between group messages
 MESSAGE_DELAY = 1.5
 
 
@@ -31,6 +29,7 @@ MESSAGE_DELAY = 1.5
 
 def init_db():
     conn = sqlite3.connect(DB_FILE)
+
     cursor = conn.cursor()
 
     cursor.execute("""
@@ -46,36 +45,61 @@ def init_db():
     conn.commit()
     conn.close()
 
+    print("DATABASE: initialized successfully")
+
 
 def save_group(chat_id, title, username, added_by):
     conn = sqlite3.connect(DB_FILE)
+
     cursor = conn.cursor()
 
     cursor.execute("""
-        INSERT INTO groups (chat_id, title, username, added_by, active)
+        INSERT INTO groups (
+            chat_id,
+            title,
+            username,
+            added_by,
+            active
+        )
         VALUES (?, ?, ?, ?, 1)
+
         ON CONFLICT(chat_id)
         DO UPDATE SET
             title = excluded.title,
             username = excluded.username,
+            added_by = excluded.added_by,
             active = 1
-    """, (chat_id, title, username, added_by))
+    """, (
+        chat_id,
+        title,
+        username,
+        added_by
+    ))
 
     conn.commit()
     conn.close()
 
+    print(
+        f"DATABASE: group saved | "
+        f"chat_id={chat_id} | "
+        f"title={title}"
+    )
+
 
 def get_groups():
     conn = sqlite3.connect(DB_FILE)
+
     cursor = conn.cursor()
 
     cursor.execute("""
         SELECT chat_id, title, username
         FROM groups
         WHERE active = 1
+        ORDER BY title COLLATE NOCASE
     """)
 
     groups = cursor.fetchall()
+
     conn.close()
 
     return groups
@@ -83,15 +107,21 @@ def get_groups():
 
 def deactivate_group(chat_id):
     conn = sqlite3.connect(DB_FILE)
+
     cursor = conn.cursor()
 
-    cursor.execute(
-        "UPDATE groups SET active = 0 WHERE chat_id = ?",
-        (chat_id,)
-    )
+    cursor.execute("""
+        UPDATE groups
+        SET active = 0
+        WHERE chat_id = ?
+    """, (chat_id,))
 
     conn.commit()
     conn.close()
+
+    print(
+        f"DATABASE: group deactivated | chat_id={chat_id}"
+    )
 
 
 # =========================
@@ -99,7 +129,10 @@ def deactivate_group(chat_id):
 # =========================
 
 def owner_only(update: Update):
-    return update.effective_user and update.effective_user.id == OWNER_ID
+    return (
+        update.effective_user
+        and update.effective_user.id == OWNER_ID
+    )
 
 
 # =========================
@@ -109,9 +142,10 @@ def owner_only(update: Update):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not owner_only(update):
-        await update.message.reply_text(
-            "This bot is privately managed."
-        )
+        if update.message:
+            await update.message.reply_text(
+                "This bot is privately managed."
+            )
         return
 
     await update.message.reply_text(
@@ -129,49 +163,96 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # GROUP REGISTRATION
 # =========================
 
-async def my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def my_chat_member(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    print("========================================")
+    print("MY_CHAT_MEMBER EVENT RECEIVED")
+    print("========================================")
 
     chat_member_update = update.my_chat_member
 
     if not chat_member_update:
+        print("MY_CHAT_MEMBER: no update object")
         return
 
     chat = chat_member_update.chat
-    new_status = chat_member_update.new_chat_member.status
-    old_status = chat_member_update.old_chat_member.status
 
-    # Bot has been added to a group
-    if new_status in [
-        ChatMemberStatus.MEMBER,
-        ChatMemberStatus.ADMINISTRATOR
-    ] and old_status in [
-        ChatMemberStatus.LEFT,
-        ChatMemberStatus.KICKED
-    ]:
+    old_status = chat_member_update.old_chat_member.status
+    new_status = chat_member_update.new_chat_member.status
+
+    print(f"GROUP ID: {chat.id}")
+    print(f"GROUP TITLE: {chat.title}")
+    print(f"GROUP USERNAME: {chat.username}")
+    print(f"OLD STATUS: {old_status}")
+    print(f"NEW STATUS: {new_status}")
+
+    added_by = (
+        update.effective_user.id
+        if update.effective_user
+        else 0
+    )
+
+    # =========================
+    # BOT ADDED TO GROUP
+    # =========================
+
+    if (
+        new_status in (
+            ChatMemberStatus.MEMBER,
+            ChatMemberStatus.ADMINISTRATOR
+        )
+        and
+        old_status in (
+            ChatMemberStatus.LEFT,
+            ChatMemberStatus.KICKED
+        )
+    ):
+
+        print("GROUP REGISTRATION: BOT ADDED")
 
         save_group(
-            chat.id,
-            chat.title or "Unknown Group",
-            chat.username,
-            update.effective_user.id if update.effective_user else 0
+            chat_id=chat.id,
+            title=chat.title or "Unknown Group",
+            username=chat.username,
+            added_by=added_by
         )
 
         try:
+
             await context.bot.send_message(
                 chat_id=chat.id,
                 text=(
-                    "🤖 Vayo Nguhe Business Nziza Bot is now connected.\n\n"
+                    "🤖 Vayo Nguhe Business Nziza Bot "
+                    "is now connected.\n\n"
                     "This group has been registered successfully."
                 )
             )
-        except Exception:
-            pass
 
-    # Bot was removed
-    elif new_status in [
+            print(
+                f"GROUP MESSAGE: sent successfully to {chat.id}"
+            )
+
+        except Exception as error:
+
+            print(
+                f"GROUP MESSAGE: failed | "
+                f"chat_id={chat.id} | "
+                f"error={error}"
+            )
+
+    # =========================
+    # BOT REMOVED FROM GROUP
+    # =========================
+
+    elif new_status in (
         ChatMemberStatus.LEFT,
         ChatMemberStatus.KICKED
-    ]:
+    ):
+
+        print("GROUP REGISTRATION: BOT REMOVED")
 
         deactivate_group(chat.id)
 
@@ -180,7 +261,10 @@ async def my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # GROUP LIST
 # =========================
 
-async def groups_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def groups_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     if not owner_only(update):
         return
@@ -188,38 +272,57 @@ async def groups_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     groups = get_groups()
 
     if not groups:
+
         await update.message.reply_text(
             "👥 No groups have been registered yet."
         )
+
         return
 
-    message = f"👥 REGISTERED GROUPS: {len(groups)}\n\n"
+    message = (
+        f"👥 REGISTERED GROUPS: {len(groups)}\n\n"
+    )
 
-    for index, (chat_id, title, username) in enumerate(groups, start=1):
+    for index, (
+        chat_id,
+        title,
+        username
+    ) in enumerate(groups, start=1):
 
         if username:
             link = f"@{username}"
         else:
             link = "Private group"
 
-        message += f"{index}. {title}\n"
-        message += f"   {link}\n"
-        message += f"   ID: {chat_id}\n\n"
+        message += (
+            f"{index}. {title}\n"
+            f"   {link}\n"
+            f"   ID: {chat_id}\n\n"
+        )
 
-        # Telegram message size protection
         if len(message) > 3500:
-            await update.message.reply_text(message)
+
+            await update.message.reply_text(
+                message
+            )
+
             message = ""
 
     if message:
-        await update.message.reply_text(message)
+
+        await update.message.reply_text(
+            message
+        )
 
 
 # =========================
 # STATS
 # =========================
 
-async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def stats_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     if not owner_only(update):
         return
@@ -238,16 +341,21 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # BROADCAST
 # =========================
 
-async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def broadcast_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     if not owner_only(update):
         return
 
     if not context.args:
+
         await update.message.reply_text(
             "Usage:\n\n"
             "/broadcast Your message here"
         )
+
         return
 
     message = " ".join(context.args)
@@ -255,9 +363,11 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     groups = get_groups()
 
     if not groups:
+
         await update.message.reply_text(
             "❌ No active groups found."
         )
+
         return
 
     sent = 0
@@ -279,9 +389,19 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             sent += 1
 
-        except Exception:
+            print(
+                f"BROADCAST: sent to {chat_id} | {title}"
+            )
+
+        except Exception as error:
 
             failed += 1
+
+            print(
+                f"BROADCAST: failed | "
+                f"{chat_id} | {error}"
+            )
+
             deactivate_group(chat_id)
 
         await asyncio.sleep(MESSAGE_DELAY)
@@ -297,16 +417,21 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # RECRUITING
 # =========================
 
-async def recruit_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def recruit_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     if not owner_only(update):
         return
 
     if not context.args:
+
         await update.message.reply_text(
             "Usage:\n\n"
             "/recruit Your recruiting message here"
         )
+
         return
 
     message = " ".join(context.args)
@@ -314,9 +439,11 @@ async def recruit_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     groups = get_groups()
 
     if not groups:
+
         await update.message.reply_text(
             "❌ No active groups found."
         )
+
         return
 
     sent = 0
@@ -338,9 +465,19 @@ async def recruit_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             sent += 1
 
-        except Exception:
+            print(
+                f"RECRUIT: sent to {chat_id} | {title}"
+            )
+
+        except Exception as error:
 
             failed += 1
+
+            print(
+                f"RECRUIT: failed | "
+                f"{chat_id} | {error}"
+            )
+
             deactivate_group(chat_id)
 
         await asyncio.sleep(MESSAGE_DELAY)
@@ -353,7 +490,21 @@ async def recruit_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # =========================
-# HEALTH SERVER FOR RENDER
+# ERROR HANDLER
+# =========================
+
+async def error_handler(
+    update: object,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    print(
+        f"BOT ERROR: {context.error}"
+    )
+
+
+# =========================
+# HEALTH SERVER
 # =========================
 
 app = Flask(__name__)
@@ -361,12 +512,23 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
+
     return "Vayo Nguhe Business Nziza Bot is running."
 
 
 def run_web_server():
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+
+    port = int(
+        os.environ.get(
+            "PORT",
+            10000
+        )
+    )
+
+    app.run(
+        host="0.0.0.0",
+        port=port
+    )
 
 
 # =========================
@@ -376,6 +538,7 @@ def run_web_server():
 def main():
 
     if not BOT_TOKEN:
+
         raise RuntimeError(
             "BOT_TOKEN environment variable is missing."
         )
@@ -388,25 +551,45 @@ def main():
         .build()
     )
 
+    # Commands
+
     application.add_handler(
-        CommandHandler("start", start)
+        CommandHandler(
+            "start",
+            start
+        )
     )
 
     application.add_handler(
-        CommandHandler("groups", groups_command)
+        CommandHandler(
+            "groups",
+            groups_command
+        )
     )
 
     application.add_handler(
-        CommandHandler("stats", stats_command)
+        CommandHandler(
+            "stats",
+            stats_command
+        )
     )
 
     application.add_handler(
-        CommandHandler("broadcast", broadcast_command)
+        CommandHandler(
+            "broadcast",
+            broadcast_command
+        )
     )
 
     application.add_handler(
-        CommandHandler("recruit", recruit_command)
+        CommandHandler(
+            "recruit",
+            recruit_command
+        )
     )
+
+    # IMPORTANT:
+    # Detect when the bot is added to/removed from groups.
 
     application.add_handler(
         ChatMemberHandler(
@@ -415,18 +598,41 @@ def main():
         )
     )
 
-    # Start health server
+    application.add_error_handler(
+        error_handler
+    )
+
+    # Start Flask health server
+
     threading.Thread(
         target=run_web_server,
         daemon=True
     ).start()
 
-    print("Vayo Nguhe Business Nziza Bot is running...")
+    print(
+        "========================================"
+    )
+
+    print(
+        "Vayo Nguhe Business Nziza Bot is running..."
+    )
+
+    print(
+        "Waiting for Telegram updates..."
+    )
+
+    print(
+        "========================================"
+    )
 
     application.run_polling(
-        allowed_updates=Update.ALL_TYPES
+        allowed_updates=[
+            "message",
+            "my_chat_member"
+        ]
     )
 
 
 if __name__ == "__main__":
+
     main()
